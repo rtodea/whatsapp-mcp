@@ -7,8 +7,14 @@ import requests
 import json
 import audio
 
-MESSAGES_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'messages.db')
-WHATSAPP_API_BASE_URL = "http://localhost:8080/api"
+# Both are overridable so one checkout can serve several WhatsApp accounts:
+# point WHATSAPP_DB_PATH at that account's store and WHATSAPP_API_BASE_URL at the
+# port its bridge listens on. Defaults reproduce the original single-account layout.
+MESSAGES_DB_PATH = os.environ.get(
+    "WHATSAPP_DB_PATH",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'messages.db'),
+)
+WHATSAPP_API_BASE_URL = os.environ.get("WHATSAPP_API_BASE_URL", "http://127.0.0.1:62009/api")
 
 @dataclass
 class Message:

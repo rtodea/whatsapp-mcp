@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -641,7 +642,7 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	}
 
 	// Download the media using whatsmeow client
-	mediaData, err := client.Download(downloader)
+	mediaData, err := client.Download(context.Background(), downloader)
 	if err != nil {
 		return false, "", "", "", fmt.Errorf("failed to download media: %v", err)
 	}
@@ -775,7 +776,11 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 	})
 
 	// Start the server
-	serverAddr := fmt.Sprintf(":%d", port)
+	// Loopback only. The REST API has NO authentication and /api/send can send
+	// WhatsApp messages as this account, so it must never be exposed on a routable
+	// interface. The MCP server talks to it over localhost. To reach it from another
+	// host, tunnel over SSH rather than changing this.
+	serverAddr := fmt.Sprintf("127.0.0.1:%d", port)
 	fmt.Printf("Starting REST API server on %s...\n", serverAddr)
 
 	// Run server in a goroutine so it doesn't block
@@ -800,14 +805,14 @@ func main() {
 		return
 	}
 
-	container, err := sqlstore.New("sqlite3", "file:store/whatsapp.db?_foreign_keys=on", dbLog)
+	container, err := sqlstore.New(context.Background(), "sqlite3", "file:store/whatsapp.db?_foreign_keys=on", dbLog)
 	if err != nil {
 		logger.Errorf("Failed to connect to database: %v", err)
 		return
 	}
 
 	// Get device store - This contains session information
-	deviceStore, err := container.GetFirstDevice()
+	deviceStore, err := container.GetFirstDevice(context.Background())
 	if err != nil {
 		if err == sql.ErrNoRows {
 			// No device exists, create one
@@ -905,8 +910,23 @@ func main() {
 
 	fmt.Println("\n✓ Connected to WhatsApp! Type 'help' for commands.")
 
-	// Start REST API server
-	startRESTServer(client, messageStore, 8080)
+	// Start REST API server.
+	// Port comes from WHATSAPP_BRIDGE_PORT so several accounts can run side by
+	// side. The store paths are already relative, so each instance is separated
+	// by its systemd WorkingDirectory; the port was the only hard collision.
+	// Default sits in 61000-65535: above the kernel ephemeral ceiling
+	// (net.ipv4.ip_local_port_range = 32768 60999, so nothing outbound can grab it)
+	// and clear of the 8000/8080 dev-server range. One port per account, ascending.
+	port := 62009
+	if p := os.Getenv("WHATSAPP_BRIDGE_PORT"); p != "" {
+		if n, err := strconv.Atoi(p); err == nil && n > 0 && n < 65536 {
+			port = n
+		} else {
+			fmt.Println("WHATSAPP_BRIDGE_PORT is not a valid port; using", port)
+		}
+	}
+	fmt.Println("REST API port:", port)
+	startRESTServer(client, messageStore, port)
 
 	// Create a channel to keep the main goroutine alive
 	exitChan := make(chan os.Signal, 1)
@@ -973,7 +993,7 @@ func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types
 
 		// If we didn't get a name, try group info
 		if name == "" {
-			groupInfo, err := client.GetGroupInfo(jid)
+			groupInfo, err := client.GetGroupInfo(context.Background(), jid)
 			if err == nil && groupInfo.Name != "" {
 				name = groupInfo.Name
 			} else {
@@ -988,7 +1008,7 @@ func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types
 		logger.Infof("Getting name for contact: %s", chatJID)
 
 		// Just use contact info (full name)
-		contact, err := client.Store.Contacts.GetContact(jid)
+		contact, err := client.Store.Contacts.GetContact(context.Background(), jid)
 		if err == nil && contact.FullName != "" {
 			name = contact.FullName
 		} else if sender != "" {
